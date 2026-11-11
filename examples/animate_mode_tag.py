@@ -57,7 +57,7 @@ def draw(env, f, title, font, small):
     n = env.size
     grid_px = n * CELL
     has_belief = f["belief"] is not None or title.startswith("qmdp")
-    W = PAD * 3 + grid_px * (2 if has_belief else 1) if has_belief else PAD * 2 + grid_px
+    W = PAD * 3 + grid_px * 2 if has_belief else max(PAD * 2 + grid_px, 560)
     img = Image.new("RGB", (W, HEAD + grid_px + PAD + 18), (250, 250, 247))
     d = ImageDraw.Draw(img)
 

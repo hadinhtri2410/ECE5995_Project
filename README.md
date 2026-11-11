@@ -13,10 +13,10 @@ conda activate robo
 pip install -e .            # or: export PYTHONPATH=$PWD
 pytest -q tests
 python examples/random_rollout.py --env ModeTag-B-v0
-python examples/evaluate.py --env ModeTag-A-v0 --policy qmdp --episodes 500 --out results/qmdp_A.csv
+python examples/evaluate.py --env ModeTag-A-v0 --policy chase --episodes 500 --out results/chase_A.csv
 python examples/evaluate.py --env ModeTag-A-v0 --policy chase --set p_o=0.6 --set p_m=0.95
-python examples/sweep_mode_tag.py --episodes 300 --out results/sweep_A.csv
-python examples/animate_mode_tag.py --env ModeTag-A-v0 --policy qmdp --out results/anim_A_qmdp.gif
+python examples/sweep_mode_tag.py --policies chase --episodes 300 --out results/sweep_A.csv
+python examples/animate_mode_tag.py --env ModeTag-A-v0 --policy chase --out results/anim_A_chase.gif
 ```
 
 ```python
@@ -40,7 +40,7 @@ obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
 | Observation | robot cell always; opponent cell only when visible, else hidden (−1). `observation="row_col"` (A): same row or column. `observation="radius"` (B): d(x, y) **≤** ε(t) |
 | Distance | Manhattan (`distance_metric` can be `euclidean` / `chebyshev`) |
 | Start | robot and opponent uniform and independent, opponent re-drawn until it differs from the robot; mode uniform |
-| Horizon | `max_steps=100`, then `truncated=True`; `gamma=0.95` (used by the exact model and the discounted-return metric) |
+| Horizon | `max_steps=100`, then `truncated=True`; `gamma=0.95` (used by the discounted-return metric) |
 
 The agent never observes the mode or ε(t). Those values appear only in the privileged `info`
 dict (`mode`, `hidden_index`, `p_o`, `p_m`, `eps`), for teacher–student / asymmetric-critic
@@ -101,7 +101,7 @@ planner model can't disagree:
 `state` is a `ModeTagState(robot, opponent, mode)`. The opponent move distribution lives in
 `_opponent_moves(mode, p_o)`, which both `transition` and the kernel use.
 
-### Exact model (belief tracking, QMDP, PBVI)
+### Exact model (belief tracking)
 
 The robot's cell is observed and the opponent ignores the robot. So a belief only needs to
 cover the 400 hidden values h = (opponent cell, mode), with index `h = opp * 4 + mode`:
@@ -132,70 +132,59 @@ to the legacy game.
 (100000–100999). A seed fixes the start state, the mode and the schedules, so every method
 sees the same episodes. Don't train on `EVAL_SEEDS`.
 
-Baselines (`tag_env/mode_baselines.py`):
-
-| Policy | What it does |
-|---|---|
-| `RandomPolicy` | uniform over the 4 moves |
-| `ChaseLastSeenPolicy` | heads for where the opponent was last seen, random otherwise; no model |
-| `QMDPPolicy` | QMDP with the exact factored belief. It knows p_o, p_m and ε(t), so it's an oracle reference, not a learner |
+Baseline (`tag_env/mode_baselines.py`): `ChaseLastSeenPolicy` heads for the cell where the
+opponent was last seen; once there, or if it has never seen the opponent, it moves randomly.
+It uses only the observation, has no model of p_o, p_m or ε(t), and needs no training.
 
 ```python
 from tag_env import evaluate, EVAL_SEEDS
-from tag_env.mode_baselines import QMDPPolicy
-records, summary = evaluate(QMDPPolicy(), "ModeTag-A-v0", seeds=EVAL_SEEDS[:500])
+from tag_env.mode_baselines import ChaseLastSeenPolicy
+records, summary = evaluate(ChaseLastSeenPolicy(), "ModeTag-A-v0", seeds=EVAL_SEEDS[:500])
 ```
 
 ### Baseline results
 
-500 episodes each (`examples/evaluate.py`; per-episode CSVs in `results/`):
+Chase policy, 500 episodes per config (`examples/evaluate.py`; per-episode CSVs in
+`results/`):
 
-| Config | Policy | Disc. return | Capture rate | Length | Visible | Est. error | Mode acc. |
-|---|---|---|---|---|---|---|---|
-| A | random | −16.98 ± 0.29 | 39.4% | 78.8 | 19.7% | – | – |
-| A | chase | −5.88 ± 0.36 | 99.0% | 21.6 | 44.1% | – | – |
-| A | QMDP | −3.70 ± 0.31 | 99.8% | 16.0 | 45.3% | 1.86 | 50.4% |
-| B | random | −16.98 ± 0.29 | 39.4% | 78.8 | 17.1% | – | – |
-| B | chase | −7.54 ± 0.42 | 89.2% | 32.8 | 43.7% | – | – |
-| B | QMDP | −4.56 ± 0.37 | 95.6% | 22.1 | 53.8% | 1.94 | 49.7% |
+| Config | Disc. return | Capture rate | Length | Opponent visible |
+|---|---|---|---|---|
+| A | −5.88 ± 0.36 | 99.0% | 21.6 | 44.1% |
+| B | −7.54 ± 0.42 | 89.2% | 32.8 | 43.7% |
 
-`examples/sweep_mode_tag.py` sweeps p_o ∈ {0.4, 0.6, 0.8, 1.0} × p_m ∈ {0.5, 0.8, 0.9, 0.95, 1.0}
-for each baseline (`results/sweep_A.csv`). QMDP's discounted return goes from −4.97 (p_o = 1,
-p_m = 0.5) to −1.25 (p_o = 1, p_m = 1). The chase heuristic captures 94–100% of the time
-in every cell. With these defaults the game is easy, so the settings may need retuning (e.g.
-a larger grid) before the RL comparison.
+`examples/sweep_mode_tag.py --policies chase` sweeps p_o ∈ {0.4, 0.6, 0.8, 1.0} ×
+p_m ∈ {0.5, 0.8, 0.9, 0.95, 1.0} (`results/sweep_A.csv`). The chase policy captures 94–100%
+of the time in every cell, and its discounted return ranges from −7.30 (p_o = 1, p_m = 0.5)
+to −4.44 (p_o = 1, p_m = 0.95). With these defaults the game is easy, so the settings may
+need retuning (e.g. a larger grid) before the RL comparison.
 
 ## Animation
 
-`examples/animate_mode_tag.py` plays one episode and saves it as a GIF:
+`examples/animate_mode_tag.py` plays one episode with the chase policy and saves it as a GIF:
 
 ```bash
-python examples/animate_mode_tag.py --env ModeTag-A-v0 --policy qmdp --out results/anim_A_qmdp.gif
+python examples/animate_mode_tag.py --env ModeTag-A-v0 --policy chase --out results/anim_A_chase.gif
 python examples/animate_mode_tag.py --env ModeTag-B-v0 --policy chase --seed 100010 --out results/anim.gif
 ```
 
-| Experiment A (QMDP, seed 100002: captured in 20 steps) | Experiment B (QMDP, seed 100003: not captured in 100 steps) |
+| Experiment A (seed 100002: captured in 33 steps) | Experiment B (seed 100002: not captured in 100 steps) |
 |---|---|
-| ![ModeTag-A QMDP episode](results/anim_A_qmdp.gif) | ![ModeTag-B QMDP episode](results/anim_B_qmdp.gif) |
+| ![ModeTag-A chase episode](results/anim_A_chase.gif) | ![ModeTag-B chase episode](results/anim_B_chase.gif) |
 
-- **Left panel, the true game.** Blue dot: robot. Red square: opponent, solid when the
-  robot can see it, faded when hidden. White arrow: the opponent's hidden mode. Yellow:
-  cells the robot can see right now, a cross (row and column) in A and a diamond of
-  radius ε(t) in B.
-- **Right panel, the policy's belief** P(opponent in cell): darker = more likely, red box =
-  true position. Only shown for policies that keep a belief (QMDP).
-- **Header:** t, ε(t) (B only), the hidden mode, the last action and reward, and the
-  running return.
+- **Blue dot:** robot. **Red square:** opponent, solid when the robot can see it, faded when
+  hidden. **White arrow:** the opponent's hidden mode. **Yellow:** cells the robot can see
+  right now, a cross (row and column) in A and a diamond of radius ε(t) in B.
+- **Header:** t, ε(t) (B only), the hidden mode, the last action and reward, and the running
+  return.
 
 Options:
-- `--policy`: `qmdp`, `chase` or `random`.
 - `--seed`: a specific episode. Without it, the script uses the first evaluation seed whose
   episode lasts at least `--min-length` steps (default 20).
 - `--ms`: milliseconds per frame (default 450).
 
-The B example is one of the ~4% of episodes where QMDP never catches the opponent. QMDP
-assumes everything is revealed after one step, so it never moves just to go look, and it
-can lose track of the opponent when ε(t) shrinks.
+The B example is one of the ~11% of episodes where the chase policy never catches the
+opponent: once it reaches the last sighting without seeing the opponent, it falls back to
+random moves, and the opponent drifts out of range.
 
 ## Legacy: Pineau Tag
 
@@ -203,11 +192,6 @@ can lose track of the opponent when ε(t) shrinks.
 (2003): 870 states, a Tag action, an opponent that flees, and visibility `dist < d(t)`. It
 has time-varying extensions (d(t), detection probability, opponent speed, p_move). It is kept
 as a reference and sanity check (registered as `Tag-Pineau-v0`, `Tag-Static-v0`,
-`Tag-TVObs-v0`, `Tag-TVOpp-v0`, `Tag-TV-v0`; baselines in `tag_env/baselines.py`). It has the
-same structure: `reward / transition / observation_probs / observe`, an exact model
-`model(t)` with `T[a,s,s']`, `Z[s,o]`, `R[s,a]`, and `belief_update`.
-
-Sanity check: QMDP on `Tag-Pineau-v0` (`EVAL_SEEDS[:500]`, γ = 0.95) gets −17.40 ± 0.33
-discounted return and an 11.2% tag rate. The paper reports −16.77 and 17%. The evaluation
-protocols differ: the paper uses 10 runs × 100 start positions and doesn't state its
-episode cap.
+`Tag-TVObs-v0`, `Tag-TVOpp-v0`, `Tag-TV-v0`). It has the same structure:
+`reward / transition / observation_probs / observe`, an exact model `model(t)` with
+`T[a,s,s']`, `Z[s,o]`, `R[s,a]`, and `belief_update`.
